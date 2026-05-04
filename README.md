@@ -61,32 +61,46 @@ start_service() {
 
 Loading from `/tmp/fifo_hook.so` as an example
 
+The hook intercepts two functions:
+- `_memcpy_s_chk` — TX path, used by `omci_msg_send` when the ONU responds to the OLT.
+- `IFX_Fifo_readElement` — RX path, called by omcid to pull an incoming OLT request off the FIFO. The hook rewrites the request in place before omcid parses it.
+
 Once hooked, omcid will read a replacements config file from `/ptconf/8311/replacements.ini` with a layout like
 
 ```ini
 # OMCI Message Replacement Rules
-# Format: <message_type> <find_hex_pattern> <replace_hex_pattern>
-#     OR: <message_type> <sequence_number>
-# 
+# Format: <R|T> <message_type> <find_hex_pattern> <replace_hex_pattern>
+#
+# Direction:
+#   R = receive  (OLT -> ONU request,  AR bit set in type byte)
+#   T = transmit (ONU -> OLT response, AK bit set in type byte)
+#
 # Notes:
-# - Patterns start at offset 8 in the OMCI message (after 8-byte header)
-# - For pattern rules: find and replace patterns must be exactly 64 hex chars (32 bytes)
-# - For sequence rules: just message type and sequence number (used for ME 0x00ab)
+# - Patterns are matched starting at offset 4 in the OMCI message — the
+#   class_id field. The first 4 pattern bytes therefore cover the ME header
+#   (class_id high, class_id low, instance_id high, instance_id low),
+#   followed by up to 32 payload bytes — typically 36 bytes / 72 hex chars.
+# - find and replace must be the same length
 # - Hex values should be continuous without spaces
 # - Comments start with # or ;
 # - Empty lines are ignored
+# - "??" is a wildcard byte. In `find` it matches any incoming byte;
+#   in `replace` it leaves the destination byte unchanged. Useful for
+#   blanket rules (e.g. "set the result code to 00 on every SET response
+#   regardless of class/instance/current value").
 #
-# Pattern Rule Example:
-# 14 00f0000080000000....(64 chars) 015b0002c000....(64 chars)
+# Wildcard example — force every SET response to result OK:
+# T 8 ?????????? ????????00
 #
-# Sequence Rule Example (for ME 0x00ab cycling replacements):
-# 9 1
-# 9 2
-# 9 3
+# Example (replace a MIB_UPLOAD_NEXT response on the TX path):
+# T 14 00f0000080000000....(72 chars) 015b0002c0000000....(72 chars)
+#
+# Example (rewrite an incoming GET request on the RX path):
+# R 9 00ab0001....(72 chars) 00ab0001....(72 chars)
 #
 # Message Types:
 #  4 = CREATE
-#  6 = DELETE  
+#  6 = DELETE
 #  8 = SET
 #  9 = GET
 # 11 = GET_ALL_ALARMS
